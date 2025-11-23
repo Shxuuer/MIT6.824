@@ -8,18 +8,21 @@ package main
 // go build -buildmode=plugin crash.go
 //
 
-import "6.5840/mr"
-import "math/rand"
-import "strings"
-import "strconv"
-import "time"
-import "fmt"
-import "os"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"math/rand"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"6.5840/mr"
+)
 
 var count int
 
-func Map(filename string, contents string) []mr.KeyValue {
+func Map(Filename string, contents string) []mr.KeyValue {
 	me := os.Getpid()
 	f := fmt.Sprintf("mr-worker-jobcount-%d-%d", me, count)
 	count++

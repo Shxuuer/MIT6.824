@@ -6,13 +6,16 @@ package main
 // go run mrsequential.go wc.so pg*.txt
 //
 
-import "fmt"
-import "6.5840/mr"
-import "plugin"
-import "os"
-import "log"
-import "io/ioutil"
-import "sort"
+import (
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"plugin"
+	"sort"
+
+	"6.5840/mr"
+)
 
 // for sorting by key.
 type ByKey []mr.KeyValue
@@ -36,17 +39,17 @@ func main() {
 	// accumulate the intermediate Map output.
 	//
 	intermediate := []mr.KeyValue{}
-	for _, filename := range os.Args[2:] {
-		file, err := os.Open(filename)
+	for _, Filename := range os.Args[2:] {
+		file, err := os.Open(Filename)
 		if err != nil {
-			log.Fatalf("cannot open %v", filename)
+			log.Fatalf("cannot open %v", Filename)
 		}
-		content, err := ioutil.ReadAll(file)
+		content, err := io.ReadAll(file)
 		if err != nil {
-			log.Fatalf("cannot read %v", filename)
+			log.Fatalf("cannot read %v", Filename)
 		}
 		file.Close()
-		kva := mapf(filename, string(content))
+		kva := mapf(Filename, string(content))
 		intermediate = append(intermediate, kva...)
 	}
 
@@ -88,19 +91,19 @@ func main() {
 
 // load the application Map and Reduce functions
 // from a plugin file, e.g. ../mrapps/wc.so
-func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(string, []string) string) {
-	p, err := plugin.Open(filename)
+func loadPlugin(Filename string) (func(string, string) []mr.KeyValue, func(string, []string) string) {
+	p, err := plugin.Open(Filename)
 	if err != nil {
-		log.Fatalf("cannot load plugin %v", filename)
+		log.Fatalf("cannot load plugin %v", Filename)
 	}
 	xmapf, err := p.Lookup("Map")
 	if err != nil {
-		log.Fatalf("cannot find Map in %v", filename)
+		log.Fatalf("cannot find Map in %v", Filename)
 	}
 	mapf := xmapf.(func(string, string) []mr.KeyValue)
 	xreducef, err := p.Lookup("Reduce")
 	if err != nil {
-		log.Fatalf("cannot find Reduce in %v", filename)
+		log.Fatalf("cannot find Reduce in %v", Filename)
 	}
 	reducef := xreducef.(func(string, []string) string)
 
