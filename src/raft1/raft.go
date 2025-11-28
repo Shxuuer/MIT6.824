@@ -9,6 +9,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"context"
 	"log"
 	"math/rand"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	tester "6.5840/tester1"
@@ -77,9 +79,11 @@ func (rf *Raft) GetState() (int, bool) {
 
 func (rf *Raft) UpdateCommitIndex() {
 	old := rf.commitIndex
-	for {
+	for N := rf.commitIndex + 1; N < len(rf.log); N++ {
+		if rf.log[N].Term != rf.currentTerm {
+			continue
+		}
 		numOfMatch := 1
-		N := rf.commitIndex + 1
 		for i := range rf.peers {
 			if i == rf.me {
 				continue
@@ -107,34 +111,30 @@ func (rf *Raft) UpdateCommitIndex() {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if len(data) == 0 {
 		return
 	}
-	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	if d.Decode(&rf.currentTerm) != nil ||
+		d.Decode(&rf.votedFor) != nil ||
+		d.Decode(&rf.log) != nil {
+		log.Fatalf("server %d failed to read persist data", rf.me)
+	}
+	debug("%d back", rf.me)
+	rf.commitIndex = -1
+	rf.lastApplied = -1
 }
 
 // how many bytes in Raft's persisted log?
@@ -192,6 +192,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	lastLogIndex, lastLogTerm := rf.GetLastLogIndexAndTerm()
 
 	if args.Term < rf.currentTerm || lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
+		if args.Term < rf.currentTerm {
+			debug("%d refuse %d because of args.Term(%d) < rf.currentTerm(%d)", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+		}
+		if lastLogTerm > args.LastLogTerm {
+			debug("%d refuse %d because of lastLogTerm(%d) > args.LastLogTerm(%d)", rf.me, args.CandidateId, lastLogTerm, args.LastLogTerm)
+		}
+		if lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex {
+			debug("%d refuse %d because of lastLogIndex(%d) > args.LastLogIndex(%d)", rf.me, args.CandidateId, lastLogIndex, args.LastLogIndex)
+		}
 		return
 	}
 
@@ -199,6 +208,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.role = Follower
+		rf.persist()
 	}
 
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
@@ -206,7 +216,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 		debug("server %v voted for %v in term %v", rf.me, args.CandidateId, args.Term)
-		return
+		rf.persist()
+	}
+	if !reply.VoteGranted {
+		debug("%d refuse %d because of votedFor(%d)", rf.me, args.CandidateId, rf.votedFor)
 	}
 }
 
@@ -245,6 +258,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.role = Follower
 		rf.votedFor = -1
+		rf.persist()
 	}
 	reply.Term = rf.currentTerm
 	lastLogIndex, _ := rf.GetLastLogIndexAndTerm()
@@ -280,6 +294,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		// 日志匹配，追加日志
 		rf.log = append(rf.log, args.Entries...)
+		rf.persist()
 		debug("append %d entries to server %d in term %d, total %d", len(args.Entries), rf.me, rf.currentTerm, len(rf.log))
 	}
 	reply.XLen = len(rf.log)
@@ -289,6 +304,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = args.LeaderCommit
 		for i := rf.lastApplied + 1; i <= rf.commitIndex && i < len(rf.log); i++ {
 			rf.applyCh <- raftapi.ApplyMsg{CommandValid: true, Command: rf.log[i].Command, CommandIndex: i + 1}
+			debug("%d apply %d", rf.me, rf.log[i].Command)
 			rf.lastApplied = i
 		}
 	}
@@ -352,6 +368,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	debug("leader %d received command at index %d in term %d", rf.me, len(rf.log), rf.currentTerm)
 	rf.log = append(rf.log, LogEntry{Term: rf.currentTerm, Command: command})
+	rf.persist()
 
 	return len(rf.log), rf.currentTerm, true
 }
@@ -368,6 +385,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	debug("%d die", rf.me)
 }
 
 func (rf *Raft) killed() bool {
@@ -419,6 +437,7 @@ func (rf *Raft) callVote(server int, ctx context.Context, wg *sync.WaitGroup) {
 				rf.currentTerm = result.reply.Term
 				rf.votedFor = -1
 				rf.role = Follower
+				rf.persist()
 				rf.mu.Unlock()
 				return
 			}
@@ -436,7 +455,7 @@ func (rf *Raft) ticker() {
 	for !rf.killed() {
 		// pause for a random amount of time between 500 and 700
 		// milliseconds.
-		ms := 200 + (rand.Int63() % 400)
+		ms := 400 + (rand.Int63() % 1000)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		if rf.role == Leader {
@@ -450,10 +469,11 @@ func (rf *Raft) ticker() {
 			debug("server %d starting election in term %d", rf.me, rf.currentTerm)
 			rf.votedFor = rf.me
 			rf.voteCount = 1
+			rf.persist()
 			rf.mu.Unlock()
 
 			taskSize := len(rf.peers) - 1
-			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(300*time.Millisecond))
 			defer cancel()
 			var wg sync.WaitGroup
 			wg.Add(taskSize)
@@ -475,8 +495,10 @@ func (rf *Raft) ticker() {
 				rf.mu.Unlock()
 				rf.sendHeartbeat()
 				rf.mu.Lock()
+				rf.persist()
 			} else {
 				rf.role = Follower
+				rf.persist()
 				debug("server %d failed to become leader in term %d, have %d", rf.me, rf.currentTerm, rf.voteCount)
 			}
 		}
@@ -520,7 +542,7 @@ func (rf *Raft) sendCmdToFollower(server int, args *AppendEntriesArgs, ctx conte
 // retryServers: 排除不能连接的服务器后，由于Term过期或日志不匹配需要重试的服务器列表
 func (rf *Raft) sendCmdToFollowers(args *AppendEntriesArgs) (bool, []AppendEntriesReply) {
 	taskSize := len(rf.peers) - 1
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(300*time.Millisecond))
 	defer cancel()
 	var wg sync.WaitGroup
 	wg.Add(taskSize)
@@ -549,13 +571,16 @@ func (rf *Raft) sendCmdToFollowers(args *AppendEntriesArgs) (bool, []AppendEntri
 
 	youAreLeader := true
 	for _, reply := range replyList {
+		rf.mu.Lock()
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
 			rf.votedFor = -1
 			rf.role = Follower
 			youAreLeader = false
+			rf.persist()
 			break
 		}
+		rf.mu.Unlock()
 	}
 	return youAreLeader, replyList
 }
@@ -601,7 +626,9 @@ func (rf *Raft) sendHeartbeat() {
 	rf.UpdateCommitIndex()
 	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 		rf.applyCh <- raftapi.ApplyMsg{CommandValid: true, Command: rf.log[i].Command, CommandIndex: i + 1}
+		debug("%d apply %d", rf.me, rf.log[i].Command)
 		rf.lastApplied = i
+		rf.persist()
 	}
 	rf.mu.Unlock()
 }
@@ -652,7 +679,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 	// initialize from state persisted before a crash
-	// rf.readPersist(persister.ReadRaftState())
+	rf.mu.Lock()
+	rf.readPersist(persister.ReadRaftState())
+	rf.mu.Unlock()
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
